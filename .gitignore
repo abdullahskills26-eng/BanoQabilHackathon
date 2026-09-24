@@ -1,0 +1,47 @@
+# ---- Flutter / Dart ----
+skillbridge_app/.dart_tool/
+skillbridge_app/.packages
+skillbridge_app/.flutter-plugins
+skillbridge_app/.flutter-plugins-dependencies
+skillbridge_app/build/
+skillbridge_app/android/.gradle/
+
+# ---- Large archives ----
+*.rar
+*.zip
+# pubspec.lock IS committed for applications (only libraries omit it),
+# so the whole team resolves the same package versions.
+**/.pub-cache/
+**/*.g.dart
+**/*.freezed.dart
+
+# Firebase secrets (never commit these)
+**/serviceAccountKey.json
+**/*-firebase-adminsdk-*.json
+
+# NOTE: firebase_options.dart, google-services.json and GoogleService-Info.plist
+# are NOT secrets and are committed. Client Firebase config (including the web
+# apiKey) ships inside every built app bundle and is public by design; access is
+# controlled by Firestore/Storage security rules, not by hiding these values.
+# The Admin SDK service-account key above IS a real secret - keep it out.
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+
+# ---- Environment ----
+.env
+.env.local
+!.env.example
+
+# ---- Editors / OS ----
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db

@@ -1,0 +1,81 @@
+rules_version = '2';
+
+// SkillBridge Firebase Storage rules.
+//
+// Two paths are used by the app:
+//   profiles/{uid}.jpg                profile pictures
+//   submissions/{assignmentId}/{uid}  assignment uploads
+//
+// Nothing is readable while signed out. Uploads are capped and restricted to
+// the file that belongs to the caller.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function underSizeLimit(megabytes) {
+      return request.resource.size < megabytes * 1024 * 1024;
+    }
+
+    function isImage() {
+      return request.resource.contentType.matches('image/.*');
+    }
+
+    // Document, archive and image types the submission form offers.
+    function isAllowedSubmissionType() {
+      return request.resource.contentType.matches('image/.*')
+          || request.resource.contentType.matches('text/.*')
+          || request.resource.contentType in [
+               'application/pdf',
+               'application/zip',
+               'application/x-zip-compressed',
+               'application/msword',
+               'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+               'application/vnd.ms-powerpoint',
+               'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+               'application/vnd.ms-excel',
+               'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+               'application/octet-stream'
+             ];
+    }
+
+    // ------------------------------------------------------------- profiles
+    // Any signed-in user can see a profile picture (they appear on rosters
+    // and grading screens). Only you can write yours: the object name must
+    // start with your own uid, which is how StoragePaths.profile() builds it.
+    match /profiles/{fileName} {
+      allow read: if signedIn();
+
+      allow write: if signedIn()
+        && fileName.split('\\.')[0] == request.auth.uid
+        && underSizeLimit(5)
+        && isImage();
+
+      allow delete: if signedIn()
+        && fileName.split('\\.')[0] == request.auth.uid;
+    }
+
+    // ---------------------------------------------------------- submissions
+    // Instructors must be able to open what students hand in, so reads are
+    // open to any signed-in user. Writes are restricted to the owning student
+    // - the {uid} path segment must be the caller.
+    match /submissions/{assignmentId}/{uid} {
+      allow read: if signedIn();
+
+      allow write: if signedIn()
+        && request.auth.uid == uid
+        && underSizeLimit(10)
+        && isAllowedSubmissionType();
+
+      allow delete: if signedIn() && request.auth.uid == uid;
+    }
+
+    // Everything else is denied.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

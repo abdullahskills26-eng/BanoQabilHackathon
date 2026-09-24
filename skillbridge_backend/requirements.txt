@@ -1,0 +1,12 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+pydantic>=2.6.0
+python-dotenv>=1.0.1
+firebase-admin>=6.5.0
+
+# Reporting in app/api/v1/reports.py uses the standard library `csv` module,
+# so no dataframe dependency is needed.
+
+# --- Development / tests ---
+# Needed only to run `python -m pytest tests/`.
+pytest>=8.0.0

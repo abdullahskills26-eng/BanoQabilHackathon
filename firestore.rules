@@ -1,0 +1,194 @@
+rules_version = '2';
+
+// SkillBridge Firestore security rules.
+//
+// Model
+//   - Nothing is readable or writable while signed out.
+//   - Role lives on users/{uid}.role and is read back through role().
+//   - Students may write their own application and their own submission, but
+//     never marks, feedback or a "Marked" status, and never their own role.
+//   - Instructors and coordinators ("staff") own attendance, assignments,
+//     grading and notices.
+//   - Coordinators additionally own courses, campuses, batches and the
+//     application lifecycle.
+//
+// Role assignment
+//   - Self-service sign-up may only ever create a 'student' profile. The
+//     form still lets someone pick instructor/coordinator, but that is stored
+//     as `requestedRole` for a coordinator to review; it grants nothing.
+//   - Elevated roles are assigned by a coordinator, either in-app or through
+//     the Admin SDK (POST /api/v1/auth/set-role), which bypasses these rules.
+//   - Once set, a role can only be changed by a coordinator.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ------------------------------------------------------------ helpers
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Fails closed: returns '' when signed out or the profile is missing.
+    function role() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        ? userDoc().role
+        : '';
+    }
+
+    function isCoordinator() { return role() == 'coordinator'; }
+    function isInstructor()  { return role() == 'instructor'; }
+    function isStaff()       { return isCoordinator() || isInstructor(); }
+
+    function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
+
+    // Field on the incoming write, with a default when absent.
+    function incoming(field, fallback) {
+      return request.resource.data.get(field, fallback);
+    }
+
+    // True when `field` is unchanged by this write.
+    function unchanged(field) {
+      return request.resource.data.get(field, null)
+          == resource.data.get(field, null);
+    }
+
+    // ---------------------------------------------------------------- users
+    match /users/{uid} {
+      // Rosters, instructor lists and grading screens all need to read other
+      // profiles, so any signed-in user may read.
+      allow read: if signedIn();
+
+      // You create your own profile at sign-up — but only ever as a student.
+      //
+      // Without the role check here, sign-up is a straight privilege
+      // escalation: `unchanged('role')` below only constrains *updates*, so a
+      // brand-new profile could simply be created with role 'coordinator'.
+      // The chosen role is kept as `requestedRole` for a coordinator to
+      // review, and grants nothing on its own.
+      //
+      // A coordinator may also create a profile for somebody else, which is
+      // what lets the demo seeder provision the instructor and coordinator
+      // accounts.
+      allow create: if isCoordinator()
+        || (isSelf(uid) && incoming('role', 'student') == 'student');
+
+      // You may edit your own profile but NOT your own role - that would let
+      // a student promote themselves into another dashboard.
+      // Staff may update other profiles (e.g. attendance percentages) but
+      // also cannot change roles. Only a coordinator can change a role.
+      allow update: if isCoordinator()
+        || ((isSelf(uid) || isStaff()) && unchanged('role'));
+
+      allow delete: if isCoordinator();
+    }
+
+    // ------------------------------------------------------ course catalog
+    match /courses/{id} {
+      allow read: if signedIn();
+      allow write: if isCoordinator();
+    }
+
+    match /campuses/{id} {
+      allow read: if signedIn();
+      allow write: if isCoordinator();
+    }
+
+    // -------------------------------------------------------------- batches
+    match /batches/{id} {
+      allow read: if signedIn();
+      allow write: if isCoordinator();
+    }
+
+    // --------------------------------------------------------- applications
+    match /applications/{id} {
+      // Applicants see their own; staff review every application.
+      allow read: if isStaff()
+        || (signedIn() && resource.data.get('uid', '') == request.auth.uid);
+
+      // A student submits their own application. They cannot pre-set an
+      // approved status or invent a rejection reason.
+      allow create: if isCoordinator()
+        || (signedIn()
+            && incoming('uid', '') == request.auth.uid
+            && incoming('status', '') == 'Submitted'
+            && incoming('rejectionReason', '') == '');
+
+      // Only a coordinator moves an application through its lifecycle.
+      allow update, delete: if isCoordinator();
+    }
+
+    // ----------------------------------------------------------- attendance
+    match /attendance/{id} {
+      // Students read their own records; staff read the whole batch.
+      allow read: if isStaff()
+        || (signedIn() && resource.data.get('uid', '') == request.auth.uid);
+
+      // Attendance is marked by instructors and coordinators only.
+      allow write: if isStaff();
+    }
+
+    // ---------------------------------------------------------- assignments
+    match /assignments/{id} {
+      allow read: if signedIn();
+      allow write: if isStaff();
+    }
+
+    // ---------------------------------------------------------- submissions
+    match /submissions/{id} {
+      allow read: if isStaff()
+        || (signedIn() && resource.data.get('uid', '') == request.auth.uid);
+
+      // A student may create their own submission, but never arrive
+      // pre-graded: no marks, no feedback, not already "Marked".
+      allow create: if isStaff()
+        || (signedIn()
+            && incoming('uid', '') == request.auth.uid
+            && incoming('marks', null) == null
+            && incoming('feedback', '') == ''
+            && incoming('status', 'Pending') != 'Marked');
+
+      // A student may revise their own work, but marks and feedback must be
+      // byte-identical to what is already stored, and they cannot mark it
+      // graded themselves. Staff have no such restriction - grading is
+      // exactly their job.
+      allow update: if isStaff()
+        || (signedIn()
+            && resource.data.get('uid', '') == request.auth.uid
+            && unchanged('marks')
+            && unchanged('feedback')
+            && incoming('status', 'Pending') != 'Marked');
+
+      allow delete: if isStaff();
+    }
+
+    // -------------------------------------------------------------- notices
+    match /notices/{id} {
+      allow read: if signedIn();
+      allow write: if isStaff();
+    }
+
+    // -------------------------------------------------------- notifications
+    match /notifications/{id} {
+      allow read: if isStaff()
+        || (signedIn() && resource.data.get('uid', '') == request.auth.uid);
+
+      // Notifications are fanned out by staff actions (new assignment, notice
+      // posted, application decision, marks uploaded).
+      allow create: if isStaff();
+
+      // Recipients may mark their own notification read.
+      allow update: if isStaff()
+        || (signedIn() && resource.data.get('uid', '') == request.auth.uid);
+
+      allow delete: if isStaff();
+    }
+
+    // Everything not matched above is denied.
+  }
+}
